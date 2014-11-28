@@ -886,6 +886,9 @@ global {
     #
     # system_id_source = "file"
     # system_id_file = "/etc/systemid"
+
+    # TODO: add description
+    use_lvmpolld = 0
 }
 
 activation {
