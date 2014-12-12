@@ -94,6 +94,13 @@ test -n "$LVM_TEST_LVMETAD" && {
 	aux prepare_lvmetad
 }
 
+echo "LVM_TEST_LVMPOLLD=$LVM_TEST_LVMPOLLD"
+test -n "$LVM_TEST_LVMPOLLD" && {
+	export LVM_LVMPOLLD_SOCKET="$TESTDIR/lvmpolld.socket"
+	export LVM_LVMPOLLD_PIDFILE="$TESTDIR/lvmpolld.pid"
+	aux prepare_lvmpolld
+}
+
 # Vars for harness
 echo "@TESTDIR=$TESTDIR"
 echo "@PREFIX=$PREFIX"
