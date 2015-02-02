@@ -64,6 +64,8 @@ static inline const char *daemon_request_str(request r, const char *path, const 
  */
 typedef response (*handle_request)(struct daemon_state s, client_handle h, request r);
 
+typedef int (*is_idle_fn)(void *private);
+
 typedef struct {
 	uint32_t log_config[32];
 	void *backend_state[32];
@@ -99,6 +101,11 @@ typedef struct daemon_state {
 	log_state *log;
 	struct thread_state *threads;
 	void *private; /* the global daemon state */
+
+	/* timeouts handling */
+	is_idle_fn idle; /* daemon specific function, NULL == no shutdown on timeout */
+	unsigned max_timeouts; /* max allowed timeouts */
+	unsigned wait_secs; /* secs to wait in select loop */
 } daemon_state;
 
 typedef struct thread_state {

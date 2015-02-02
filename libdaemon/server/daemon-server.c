@@ -508,11 +508,18 @@ static void reap(daemon_state s, int waiting)
 	}
 }
 
+static inline int no_clients(daemon_state s)
+{
+	return s.threads->next == NULL;
+}
+
 void daemon_start(daemon_state s)
 {
+	struct timeval timeout;
 	int failed = 0;
 	log_state _log = { { 0 } };
 	thread_state _threads = { .next = NULL };
+	unsigned timeout_count = 0;
 
 	/*
 	 * Switch to C locale to avoid reading large locale-archive file used by
@@ -583,15 +590,28 @@ void daemon_start(daemon_state s)
 			failed = 1;
 
 	while (!_shutdown_requested && !failed) {
+		timeout.tv_sec = s.wait_secs;
+		timeout.tv_usec = 0;
 		fd_set in;
 		FD_ZERO(&in);
 		FD_SET(s.socket_fd, &in);
-		if (select(FD_SETSIZE, &in, NULL, NULL, NULL) < 0 && errno != EINTR)
+		if (select(FD_SETSIZE, &in, NULL, NULL, s.idle ? &timeout : NULL) < 0 && errno != EINTR)
 			perror("select error");
-		if (FD_ISSET(s.socket_fd, &in))
+		if (FD_ISSET(s.socket_fd, &in)) {
+			timeout_count = 0;
 			if (!_shutdown_requested && !handle_connect(s))
 				ERROR(&s, "Failed to handle a client connection.");
+		}
+
 		reap(s, 0);
+
+		/* s.idle == NULL equals no shutdown on timeout */
+		if (s.idle && no_clients(s) && s.idle(s.private)) {
+			if (++timeout_count >= s.max_timeouts) {
+				INFO(&s, "Maximum number of timeouts exceeded");
+				break;
+			}
+		}
 	}
 
 	INFO(&s, "%s waiting for client threads to finish", s.name);
