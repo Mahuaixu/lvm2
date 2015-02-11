@@ -35,7 +35,16 @@ typedef struct {
 	struct buffer buffer;
 } response;
 
+struct timeval;
+
+typedef struct {
+	volatile unsigned is_idle;
+	unsigned max_timeouts;
+	struct timeval *ptimeout;
+} daemon_idle;
+
 struct daemon_state;
+
 
 /*
  * Craft a simple reply, without the need to construct a config_tree. See
@@ -63,8 +72,6 @@ static inline const char *daemon_request_str(request r, const char *path, const 
  * sent.
  */
 typedef response (*handle_request)(struct daemon_state s, client_handle h, request r);
-
-typedef int (*is_idle_fn)(void *private);
 
 typedef struct {
 	uint32_t log_config[32];
@@ -102,10 +109,8 @@ typedef struct daemon_state {
 	struct thread_state *threads;
 	void *private; /* the global daemon state */
 
-	/* timeouts handling */
-	is_idle_fn idle; /* daemon specific function, NULL == no shutdown on timeout */
-	unsigned max_timeouts; /* max allowed timeouts */
-	unsigned wait_secs; /* secs to wait in select loop */
+	/* suport for shutdown on idle */
+	daemon_idle *idle;
 } daemon_state;
 
 typedef struct thread_state {
@@ -172,5 +177,10 @@ void daemon_log_enable(log_state *s, int outlet, int type, int enable);
  * "all,wire,debug". Returns 0 upon encountering an unknown message type.
  */
 int daemon_log_parse(log_state *s, int outlet, const char *types, int enable);
+
+static inline unsigned _get_max_timeouts(daemon_state s)
+{
+	return s.idle ? s.idle->max_timeouts : 0;
+}
 
 #endif
