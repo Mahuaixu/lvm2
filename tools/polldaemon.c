@@ -419,14 +419,14 @@ err:
 /* FIXME: this requires audit after code modifications due to bug in pvmove handling */
 /* FIXME: this requires audit after code modifications due to bug in pvmove handling */
 static int _lvmpolld_init_poll_vg(struct cmd_context *cmd, const char *vgname,
-			          struct volume_group *vg, void *handle)
+			          struct volume_group *vg, struct processing_handle *handle)
 {
 	int r;
 	struct lv_list *lvl;
 	struct logical_volume *lv;
 	struct poll_lv_list *plv;
 	union lvid lvid;
-	lvmpolld_parms_t *lpdp = (lvmpolld_parms_t *) handle;
+	lvmpolld_parms_t *lpdp = (lvmpolld_parms_t *) handle->custom_handle;
 	struct poll_operation_id id = { 0 };
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
@@ -488,7 +488,8 @@ static void _sleep_a_while(unsigned seconds)
 }
 
 static void _lvmpolld_poll_for_all_vgs(struct cmd_context *cmd,
-				       struct daemon_parms *parms)
+				       struct daemon_parms *parms,
+				       struct processing_handle *handle)
 {
 	int r;
 	struct poll_lv_list *plv, *tlv;
@@ -500,8 +501,10 @@ static void _lvmpolld_poll_for_all_vgs(struct cmd_context *cmd,
 
 	dm_list_init(&lpdp.plvs);
 
+	handle->custom_handle = &lpdp;
+
 	/* TODO perhaps I don't need update lock here */
-	process_each_vg(cmd, 0, NULL, READ_FOR_UPDATE, &lpdp, _lvmpolld_init_poll_vg);
+	process_each_vg(cmd, 0, NULL, READ_FOR_UPDATE, handle, _lvmpolld_init_poll_vg);
 
 	while (!dm_list_empty(&lpdp.plvs)) {
 		dm_list_iterate_items_safe(plv, tlv, &lpdp.plvs) {
@@ -617,7 +620,6 @@ static int _poll_daemon(struct cmd_context *cmd, struct poll_operation_id *id,
 	}
 
 	destroy_processing_handle(cmd, handle);
-
 	return ret;
 }
 
@@ -669,6 +671,7 @@ static int _lvmpoll_daemon(struct cmd_context *cmd, struct poll_operation_id *id
 			   struct daemon_parms *parms)
 {
 	int r;
+	struct processing_handle *handle = NULL;
 	unsigned finished = 0;
 
 	if (id) {
@@ -688,8 +691,13 @@ static int _lvmpoll_daemon(struct cmd_context *cmd, struct poll_operation_id *id
 		return r ? ECMD_PROCESSED : ECMD_FAILED;
 	} else {
 		/* process all in-flight operations */
-
-		_lvmpolld_poll_for_all_vgs(cmd, parms);
-		return ECMD_PROCESSED;
+		if (!(handle = init_processing_handle(cmd))) {
+			log_error("Failed to initialize processing handle.");
+			return ECMD_FAILED;
+		} else {
+			_lvmpolld_poll_for_all_vgs(cmd, parms, handle);
+			destroy_processing_handle(cmd, handle);
+			return ECMD_PROCESSED;
+		}
 	}
 }
