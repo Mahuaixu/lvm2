@@ -13,9 +13,13 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <time.h>
+
 #include "tools.h"
 #include "polldaemon.h"
 #include "lvm2cmdline.h"
+
+#define WAIT_AT_LEAST_NANOSECS 100000
 
 progress_t poll_mirror_progress(struct cmd_context *cmd,
 				struct logical_volume *lv, const char *name,
@@ -131,11 +135,22 @@ static int _check_lv_status(struct cmd_context *cmd,
 	return 1;
 }
 
+static void _nanosleep(unsigned secs, unsigned allow_zero_time)
+{
+	struct timespec time = {
+		.tv_sec = secs,
+	};
+
+	if (!secs && !allow_zero_time)
+		time.tv_nsec = WAIT_AT_LEAST_NANOSECS;
+
+	while (!nanosleep(&time, &time) && errno == EINTR) {}
+}
+
 static void _sleep_and_rescan_devices(struct daemon_parms *parms)
 {
-	/* FIXME Use alarm for regular intervals instead */
 	if (parms->interval && !parms->aborting) {
-		sleep(parms->interval);
+		_nanosleep(parms->interval, 1);
 		/* Devices might have changed while we slept */
 		init_full_scan_done(0);
 	}
@@ -348,7 +363,7 @@ static void _poll_for_all_vgs(struct cmd_context *cmd,
 		process_each_vg(cmd, 0, NULL, READ_FOR_UPDATE, handle, _poll_vg);
 		if (!parms->outstanding_count)
 			break;
-		sleep(parms->interval);
+		_nanosleep(parms->interval, 1);
 	}
 }
 
