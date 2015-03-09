@@ -37,6 +37,13 @@ typedef struct {
 
 struct timeval;
 
+/*
+ * is_idle:	 daemon implementation sets it to true when no background task
+ *		 is running
+ * max_timeouts: how many seconds do daemon allow to be idle before it shutdowns
+ * ptimeout:	 internal variable passed to select(). has to be reset to 1 second
+ *		 before each select
+ */
 typedef struct {
 	volatile unsigned is_idle;
 	unsigned max_timeouts;
@@ -44,7 +51,6 @@ typedef struct {
 } daemon_idle;
 
 struct daemon_state;
-
 
 /*
  * Craft a simple reply, without the need to construct a config_tree. See
@@ -178,6 +184,7 @@ void daemon_log_enable(log_state *s, int outlet, int type, int enable);
  */
 int daemon_log_parse(log_state *s, int outlet, const char *types, int enable);
 
+/* safely return of max_timeouts count */
 static inline unsigned _get_max_timeouts(daemon_state s)
 {
 	return s.idle ? s.idle->max_timeouts : 0;
