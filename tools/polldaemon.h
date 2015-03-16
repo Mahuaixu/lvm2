@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -31,7 +31,8 @@ struct poll_functions {
 	const char *(*get_copy_name_from_lv) (const struct logical_volume *lv);
 	struct volume_group *(*get_copy_vg) (struct cmd_context *cmd,
 					     const char *name,
-					     const char *uuid);
+					     const char *uuid,
+					     uint32_t flags);
 	struct logical_volume *(*get_copy_lv) (struct cmd_context *cmd,
 					       struct volume_group *vg,
 					       const char *name,
@@ -51,6 +52,13 @@ struct poll_functions {
 			    struct dm_list *lvs_changed);
 };
 
+struct poll_operation_id {
+	const char *vg_name;
+	const char *lv_name;
+	const char *display_name;
+	const char *uuid;
+};
+
 struct daemon_parms {
 	unsigned interval;
 	unsigned wait_before_testing;
@@ -63,13 +71,23 @@ struct daemon_parms {
 	struct poll_functions *poll_fns;
 };
 
-int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
-		unsigned background,
+int poll_daemon(struct cmd_context *cmd, unsigned background,
 		uint64_t lv_type, struct poll_functions *poll_fns,
-		const char *progress_title);
+		const char *progress_title, struct poll_operation_id *id);
 
 progress_t poll_mirror_progress(struct cmd_context *cmd,
 				struct logical_volume *lv, const char *name,
 				struct daemon_parms *parms);
+
+struct volume_group *poll_get_copy_vg(struct cmd_context *cmd, const char *name,
+				      const char *uuid, unsigned read_only);
+
+struct logical_volume *poll_get_copy_lv(struct cmd_context *cmd,
+					struct volume_group *vg,
+					const char *name, const char *uuid,
+					uint64_t lv_type);
+
+int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
+		       struct daemon_parms *parms);
 
 #endif

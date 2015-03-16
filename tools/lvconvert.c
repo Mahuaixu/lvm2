@@ -700,56 +700,84 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 }
 
 static struct poll_functions _lvconvert_mirror_fns = {
-	.get_copy_vg = lvconvert_get_copy_vg,
-	.get_copy_lv = lvconvert_get_copy_lv,
+	.get_copy_vg = poll_get_copy_vg,
+	.get_copy_lv = poll_get_copy_lv,
 	.poll_progress = poll_mirror_progress,
 	.finish_copy = lvconvert_mirror_finish,
 };
 
 static struct poll_functions _lvconvert_merge_fns = {
-	.get_copy_vg = lvconvert_get_copy_vg,
-	.get_copy_lv = lvconvert_get_copy_lv,
+	.get_copy_vg = poll_get_copy_vg,
+	.get_copy_lv = poll_get_copy_lv,
 	.poll_progress = poll_merge_progress,
 	.finish_copy = lvconvert_merge_finish,
 };
 
 static struct poll_functions _lvconvert_thin_merge_fns = {
-	.get_copy_vg = lvconvert_get_copy_vg,
-	.get_copy_lv = lvconvert_get_copy_lv,
+	.get_copy_vg = poll_get_copy_vg,
+	.get_copy_lv = poll_get_copy_lv,
 	.poll_progress = poll_thin_merge_progress,
 	.finish_copy = lvconvert_merge_finish,
 };
 
+static void _destroy_id(struct cmd_context *cmd, struct poll_operation_id *id)
+{
+	if (!id)
+		return;
+
+	dm_pool_free(cmd->mem, (void *)id);
+}
+
+static struct poll_operation_id *_create_id(struct cmd_context *cmd,
+					    const char *vg_name,
+					    const char *lv_name,
+					    const char *uuid)
+{
+	char lv_full_name[NAME_LEN];
+	struct poll_operation_id *id = dm_pool_zalloc(cmd->mem, sizeof(struct poll_operation_id));
+	if (!id)
+		return NULL;
+
+	if (dm_snprintf(lv_full_name, sizeof(lv_full_name), "%s/%s", vg_name, lv_name) < 0)
+		log_error(INTERNAL_ERROR "Name \"%s/%s\" is too long.", vg_name, lv_name);
+	else
+		id->display_name = dm_pool_strdup(cmd->mem, lv_full_name);
+
+	id->vg_name = vg_name ? dm_pool_strdup(cmd->mem, vg_name) : NULL;
+	id->lv_name = id->display_name ? strchr(id->display_name, '/') + 1 : NULL;
+	id->uuid = uuid ? dm_pool_strdup(cmd->mem, uuid) : NULL;
+
+	if (!id->vg_name || !id->lv_name || !id->display_name || !id->uuid) {
+		_destroy_id(cmd, id);
+		id = NULL;
+	}
+
+	return id;
+}
+
 int lvconvert_poll(struct cmd_context *cmd, struct logical_volume *lv,
 		   unsigned background)
 {
-	/*
-	 * FIXME allocate an "object key" structure with split
-	 * out members (vg_name, lv_name, uuid, etc) and pass that
-	 * around the lvconvert and polldaemon code
-	 * - will avoid needless work, e.g. extract_vgname()
-	 * - unfortunately there are enough overloaded "name" dragons in
-	 *   the polldaemon, lvconvert, pvmove code that a comprehensive
-	 *   audit/rework is needed
-	 */
-	char uuid[sizeof(lv->lvid)];
-	char lv_full_name[NAME_LEN];
-
-	if (dm_snprintf(lv_full_name, sizeof(lv_full_name), "%s/%s", lv->vg->name, lv->name) < 0) {
-		log_error(INTERNAL_ERROR "Name \"%s/%s\" is too long.", lv->vg->name, lv->name);
+	int is_thin, r;
+	struct poll_operation_id *id = _create_id(cmd, lv->vg->name, lv->name, lv->lvid.s);
+	if (!id) {
+		log_error("Failed to allocate poll identifier for lvconvert.");
 		return ECMD_FAILED;
 	}
 
-	memcpy(uuid, &lv->lvid, sizeof(lv->lvid));
+	if (lv_is_merging_origin(lv)) {
+		is_thin = seg_is_thin_volume(find_snapshot(lv));
+		r = poll_daemon(cmd, background,
+				(MERGING | (is_thin ? THIN_VOLUME : SNAPSHOT)),
+				is_thin ? &_lvconvert_thin_merge_fns : &_lvconvert_merge_fns,
+				"Merged", id);
+	} else
+		r = poll_daemon(cmd, background, CONVERTING,
+				&_lvconvert_mirror_fns, "Converted", id);
 
-	if (lv_is_merging_origin(lv))
-		return poll_daemon(cmd, lv_full_name, uuid, background, 0,
-				   seg_is_thin_volume(find_snapshot(lv)) ?
-				   &_lvconvert_thin_merge_fns : &_lvconvert_merge_fns,
-				   "Merged");
+	_destroy_id(cmd, id);
 
-	return poll_daemon(cmd, lv_full_name, uuid, background, 0,
-			   &_lvconvert_mirror_fns, "Converted");
+	return r;
 }
 
 static int _insert_lvconvert_layer(struct cmd_context *cmd,
@@ -3219,13 +3247,13 @@ static struct logical_volume *get_vg_lock_and_logical_volume(struct cmd_context 
 	struct volume_group *vg;
 	struct logical_volume* lv = NULL;
 
-	vg = lvconvert_get_copy_vg(cmd, vg_name, NULL);
+	vg = poll_get_copy_vg(cmd, vg_name, NULL, READ_FOR_UPDATE);
 	if (vg_read_error(vg)) {
 		release_vg(vg);
 		return_NULL;
 	}
 
-	if (!(lv = lvconvert_get_copy_lv(cmd, vg, lv_name, NULL, 0))) {
+	if (!(lv = poll_get_copy_lv(cmd, vg, lv_name, NULL, 0))) {
 		log_error("Can't find LV %s in VG %s", lv_name, vg_name);
 		unlock_and_release_vg(cmd, vg, vg_name);
 		return NULL;

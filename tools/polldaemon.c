@@ -49,6 +49,32 @@ progress_t poll_mirror_progress(struct cmd_context *cmd,
 	return PROGRESS_FINISHED_SEGMENT;
 }
 
+struct volume_group *poll_get_copy_vg(struct cmd_context *cmd, const char *name,
+				      const char *uuid __attribute__((unused)),
+				      uint32_t flags)
+{
+	dev_close_all();
+
+	if (name && !strchr(name, '/'))
+		return vg_read(cmd, name, NULL, flags);
+
+	/* 'name' is the full LV name; must extract_vgname() */
+	return vg_read(cmd, extract_vgname(cmd, name), NULL, flags);
+}
+
+struct logical_volume *poll_get_copy_lv(struct cmd_context *cmd __attribute__((unused)),
+					struct volume_group *vg,
+					const char *name, const char *uuid,
+					uint64_t lv_type)
+{
+	struct logical_volume *lv = find_lv(vg, name);
+
+	if (!lv || (lv_type && !(lv->status & lv_type)) || (uuid && strcmp(uuid, (char *)&lv->lvid)))
+		return NULL;
+
+	return lv;
+}
+
 static int _check_lv_status(struct cmd_context *cmd,
 			    struct volume_group *vg,
 			    struct logical_volume *lv,
@@ -115,8 +141,8 @@ static void _sleep_and_rescan_devices(struct daemon_parms *parms)
 	}
 }
 
-static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const char *uuid,
-			       struct daemon_parms *parms)
+int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
+		       struct daemon_parms *parms)
 {
 	struct volume_group *vg;
 	struct logical_volume *lv;
@@ -128,26 +154,26 @@ static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const 
 			_sleep_and_rescan_devices(parms);
 
 		/* Locks the (possibly renamed) VG again */
-		vg = parms->poll_fns->get_copy_vg(cmd, name, uuid);
+		vg = parms->poll_fns->get_copy_vg(cmd, id->vg_name, NULL, READ_FOR_UPDATE);
 		if (vg_read_error(vg)) {
 			release_vg(vg);
-			log_error("ABORTING: Can't reread VG for %s", name);
+			log_error("ABORTING: Can't reread VG for %s.", id->display_name);
 			/* What more could we do here? */
 			return 0;
 		}
 
-		lv = parms->poll_fns->get_copy_lv(cmd, vg, name, uuid, parms->lv_type);
+		lv = parms->poll_fns->get_copy_lv(cmd, vg, id->lv_name, id->uuid, parms->lv_type);
 
 		if (!lv && parms->lv_type == PVMOVE) {
 			log_print_unless_silent("%s: no pvmove in progress - already finished or aborted.",
-						name);
+						id->display_name);
 			unlock_and_release_vg(cmd, vg, vg->name);
 			return 1;
 		}
 
 		if (!lv) {
-			log_error("ABORTING: Can't find LV in %s for %s",
-				  vg->name, name);
+			log_error("ABORTING: Can't find LV in %s for %s.",
+				  vg->name, id->display_name);
 			unlock_and_release_vg(cmd, vg, vg->name);
 			return 0;
 		}
@@ -157,12 +183,12 @@ static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const 
 		 * queried for its status.  We must exit in this case.
 		 */
 		if (!lv_is_active_locally(lv)) {
-			log_print_unless_silent("%s: Interrupted: No longer active.", name);
+			log_print_unless_silent("%s: Interrupted: No longer active.", id->display_name);
 			unlock_and_release_vg(cmd, vg, vg->name);
 			return 1;
 		}
 
-		if (!_check_lv_status(cmd, vg, lv, name, parms, &finished)) {
+		if (!_check_lv_status(cmd, vg, lv, id->display_name, parms, &finished)) {
 			unlock_and_release_vg(cmd, vg, vg->name);
 			return_0;
 		}
@@ -181,11 +207,61 @@ static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const 
 		 * polldaemon(s) are polling.  These other polldaemon(s) can then
 		 * continue polling an LV that doesn't have a "status".
 		 */
-		if (!parms->wait_before_testing)
+		if (!parms->wait_before_testing && !finished)
 			_sleep_and_rescan_devices(parms);
 	}
 
 	return 1;
+}
+
+struct poll_id_list {
+	struct dm_list list;
+	struct poll_operation_id *id;
+};
+
+static struct poll_operation_id *copy_poll_operation_id(struct dm_pool *mem,
+							const struct poll_operation_id *id)
+{
+	struct poll_operation_id *copy;
+
+	if (!id)
+		return_NULL;
+
+	copy = (struct poll_operation_id *) dm_pool_alloc(mem, sizeof(struct poll_operation_id));
+	if (!copy) {
+		log_errno(ENOMEM, "poll_operation_id allocation failed");
+		return NULL;
+	}
+
+	copy->display_name = id->display_name ? dm_pool_strdup(mem, id->display_name) : NULL;
+	copy->lv_name = id->lv_name ? dm_pool_strdup(mem, id->lv_name) : NULL;
+	copy->vg_name = id->vg_name ? dm_pool_strdup(mem, id->vg_name) : NULL;
+	copy->uuid = id->uuid ? dm_pool_strdup(mem, id->uuid) : NULL;
+
+	if (!copy->display_name || !copy->lv_name || !copy->vg_name || !copy->uuid) {
+		log_error("Failed to copy one or more poll_operation_id members.");
+		return NULL;
+	}
+
+	return copy;
+}
+
+static struct poll_id_list* poll_id_list_create(struct dm_pool *mem,
+						const struct poll_operation_id *id)
+{
+	struct poll_id_list *idl = (struct poll_id_list *) dm_pool_alloc(mem, sizeof(struct poll_id_list));
+
+	if (!idl) {
+		log_errno(ENOMEM, "poll_id_list allocation failed.");
+		return NULL;
+	}
+
+	if (!(idl->id = copy_poll_operation_id(mem, id))) {
+		dm_pool_free(mem, idl);
+		return NULL;
+	}
+
+	return idl;
 }
 
 static int _poll_vg(struct cmd_context *cmd, const char *vgname,
@@ -193,10 +269,10 @@ static int _poll_vg(struct cmd_context *cmd, const char *vgname,
 {
 	struct daemon_parms *parms;
 	struct lv_list *lvl;
-	struct dm_list *sls;
-	struct dm_str_list *sl;
+	struct dm_list idls;
+	struct poll_id_list *idl;
+	struct poll_operation_id id;
 	struct logical_volume *lv;
-	const char *name;
 	int finished;
 
 	if (!handle || !(parms = (struct daemon_parms *) handle->custom_handle)) {
@@ -204,8 +280,7 @@ static int _poll_vg(struct cmd_context *cmd, const char *vgname,
 		return ECMD_FAILED;
 	}
 
-	if (!(sls = str_list_create(cmd->mem)))
-		return ECMD_FAILED;
+	dm_list_init(&idls);
 
 	log_verbose("Looking for pvmove LVs in VG: %s.", vg->name);
 
@@ -219,38 +294,46 @@ static int _poll_vg(struct cmd_context *cmd, const char *vgname,
 		lv = lvl->lv;
 		if (!(lv->status & parms->lv_type))
 			continue;
-		name = parms->poll_fns->get_copy_name_from_lv(lv);
-		if (!name && !parms->aborting)
+		id.display_name = parms->poll_fns->get_copy_name_from_lv(lv);
+		if (!id.display_name && !parms->aborting)
 			continue;
 
 		/* FIXME Need to do the activation from _set_up_pvmove here
 		 *       if it's not running and we're not aborting. */
 		if (!lv_is_active(lv)) {
-			log_print_unless_silent("%s: Skipping inactive LV. Try lvchange or vgchange.", name);
+			log_print_unless_silent("%s: Skipping inactive LV. Try lvchange or vgchange.", id.display_name);
 			continue;
 		}
 
-		if (!str_list_add(cmd->mem, sls, dm_pool_strdup(cmd->mem, name))) {
-			log_error("Failed to clone pvname");
+		id.lv_name = lv->name;
+		id.vg_name = vg->name;
+		id.uuid = lv->lvid.s;
+
+		idl = poll_id_list_create(cmd->mem, &id);
+		if (!idl) {
+			log_error("Failed to create poll_id_list.");
 			goto err;
 		}
 
-		log_verbose("Found LV: %s/%s. It belongs to pvmove task on PV %s.", lv->vg->name, lv->name, name);
+		dm_list_add(&idls, &idl->list);
+
+		log_verbose("Found LV: %s/%s. It belongs to pvmove task on PV %s.", lv->vg->name, lv->name, id.display_name);
 	}
 
-	dm_list_iterate_items(sl, sls) {
-		lv = parms->poll_fns->get_copy_lv(cmd, vg, sl->str, NULL, parms->lv_type);
+	dm_list_iterate_items(idl, &idls) {
+		lv = parms->poll_fns->get_copy_lv(cmd, vg, idl->id->lv_name, idl->id->uuid, parms->lv_type);
 		if (lv) {
-			log_verbose("About to call _check_lv_status on LV: %s/%s, name: %s",
-				    lv->vg->name, lv->name, sl->str);
-			if (_check_lv_status(cmd, vg, lv, sl->str, parms, &finished) &&
+			log_verbose("About to call _check_lv_status on LV: %s/%s, name: %s.",
+				    lv->vg->name, lv->name, idl->id->display_name);
+			if (_check_lv_status(cmd, vg, lv, idl->id->display_name, parms, &finished) &&
 			    !finished)
 				parms->outstanding_count++;
 		}
 	}
 
 err:
-	dm_pool_free(cmd->mem, sls);
+	if (!dm_list_empty(&idls))
+		dm_pool_free(cmd->mem, dm_list_item(dm_list_first(&idls), struct poll_id_list));
 
 	return ECMD_PROCESSED;
 }
@@ -275,8 +358,8 @@ static void _poll_for_all_vgs(struct cmd_context *cmd,
  * - 'background' is advisory so a child polldaemon may not be used even
  *   if it was requested.
  */
-static int _poll_daemon(struct cmd_context *cmd, const char *name,
-			const char *uuid, struct daemon_parms *parms)
+static int _poll_daemon(struct cmd_context *cmd, struct poll_operation_id *id,
+			struct daemon_parms *parms)
 {
 	struct processing_handle *handle = NULL;
 	int daemon_mode = 0;
@@ -295,8 +378,8 @@ static int _poll_daemon(struct cmd_context *cmd, const char *name,
 	/*
 	 * Process one specific task or all incomplete tasks?
 	 */
-	if (name) {
-		if (!_wait_for_single_lv(cmd, name, uuid, parms)) {
+	if (id) {
+		if (!wait_for_single_lv(cmd, id, parms)) {
 			stack;
 			ret = ECMD_FAILED;
 		}
@@ -358,15 +441,16 @@ static int _daemon_parms_init(struct cmd_context *cmd, struct daemon_parms *parm
 	return 1;
 }
 
-int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
-		unsigned background,
+int poll_daemon(struct cmd_context *cmd, unsigned background,
 		uint64_t lv_type, struct poll_functions *poll_fns,
-		const char *progress_title)
+		const char *progress_title, struct poll_operation_id *id)
 {
 	struct daemon_parms parms;
 
 	if (!_daemon_parms_init(cmd, &parms, background, poll_fns, progress_title, lv_type))
 		return EINVALID_CMD_LINE;
 
-	return _poll_daemon(cmd, name, uuid, &parms);
+	/* classical polling allows only PMVOVE or 0 values */
+	parms.lv_type &= PVMOVE;
+	return _poll_daemon(cmd, id, &parms);
 }

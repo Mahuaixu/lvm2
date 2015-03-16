@@ -20,16 +20,11 @@ struct dm_list;
 struct logical_volume;
 struct volume_group;
 
-struct volume_group *get_vg(struct cmd_context *cmd, const char *vgname);
-
 int pvmove_update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 			   struct logical_volume *lv_mirr,
 			   struct dm_list *lvs_changed, unsigned flags);
 
 int pvmove_finish(struct cmd_context *cmd, struct volume_group *vg,
 		  struct logical_volume *lv_mirr, struct dm_list *lvs_changed);
-
-struct volume_group *pvmove_get_copy_vg(struct cmd_context *cmd,
-					const char *name, const char *uuid);
 
 #endif  /* _LVM_PVMOVE_H */
