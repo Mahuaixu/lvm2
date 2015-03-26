@@ -570,6 +570,21 @@ out:
 	return r;
 }
 
+static int _copy_id_components(struct cmd_context *cmd,
+			       const struct logical_volume *lv, char **vg_name,
+			       char **lv_name, union lvid *lvid)
+{
+	if (!(*vg_name = dm_pool_strdup(cmd->mem, lv->vg->name)) ||
+	    !(*lv_name = dm_pool_strdup(cmd->mem, lv->name))) {
+		log_error("Failed to clone VG or LV name.");
+		return 0;
+	}
+
+	*lvid = lv->lvid;
+
+	return 1;
+}
+
 static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 			  int argc, char **argv, union lvid *lvid, char **vg_name,
 			  char **lv_mirr_name)
@@ -676,15 +691,8 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 		if (!_update_metadata(cmd, vg, lv_mirr, lvs_changed, exclusive))
 			goto_out;
 
-	log_verbose("The pvmove LV: %s/%s", lv_mirr->vg->name, lv_mirr->name);
-
-	if (!(*vg_name = dm_pool_strdup(cmd->mem, lv_mirr->vg->name)) ||
-	    !(*lv_mirr_name = dm_pool_strdup(cmd->mem, lv_mirr->name))) {
-		log_error("Failed to clone VG or LV name.");
+	if (!_copy_id_components(cmd, lv_mirr, vg_name, lv_mirr_name, lvid))
 		goto out;
-	}
-
-	memcpy(lvid, &lv_mirr->lvid, sizeof(*lvid));
 
 	/* LVs are all in status LOCKED */
 	r = ECMD_PROCESSED;
@@ -692,6 +700,47 @@ out:
 	free_pv_fid(pv);
 	unlock_and_release_vg(cmd, vg, pv_vg_name(pv));
 	return r;
+}
+
+static int _get_id_components(struct cmd_context *cmd, const char *pv_name,
+			      union lvid *lvid, char **vg_name, char **lv_name,
+			      unsigned *in_progress)
+{
+	int ret = 0;
+	struct logical_volume *lv;
+	struct physical_volume *pv;
+	struct volume_group *vg;
+
+	if (!pv_name) {
+		log_error(INTERNAL_ERROR "Invalid PV name parameter.");
+		return 0;
+	}
+
+	if (!(pv = find_pv_by_name(cmd, pv_name, 0, 0)))
+		return 0;
+
+	/* need read-only access */
+	vg = poll_get_copy_vg(cmd, pv_vg_name(pv), NULL, 0);
+	if (vg_read_error(vg)) {
+		log_error("ABORTING: Can't read VG for %s.", pv_name);
+		release_vg(vg);
+		free_pv_fid(pv);
+		return 0;
+	}
+
+	if (!(lv = find_pvmove_lv(vg, pv_dev(pv), PVMOVE))) {
+		log_print_unless_silent("%s: no pvmove in progress - already finished or aborted.",
+					pv_name);
+		ret = 1;
+		*in_progress = 0;
+	} else if (_copy_id_components(cmd, lv, vg_name, lv_name, lvid)) {
+		ret = 1;
+		*in_progress = 1;
+	}
+
+	unlock_and_release_vg(cmd, vg, pv_vg_name(pv));
+	free_pv_fid(pv);
+	return ret;
 }
 
 static struct poll_functions _pvmove_fns = {
@@ -717,9 +766,11 @@ static struct poll_operation_id *_create_id(struct cmd_context *cmd,
 					    const char *lv_name,
 					    const char *uuid)
 {
-	struct poll_operation_id *id = dm_pool_zalloc(cmd->mem, sizeof(struct poll_operation_id));
-	if (!id)
+	struct poll_operation_id *id = dm_pool_alloc(cmd->mem, sizeof(struct poll_operation_id));
+	if (!id) {
+		log_errno(ENOMEM, "poll_operetaion_id allocation failed.");
 		return NULL;
+	}
 
 	id->vg_name = vg_name ? dm_pool_strdup(cmd->mem, vg_name) : NULL;
 	id->lv_name = lv_name ? dm_pool_strdup(cmd->mem, lv_name) : NULL;
@@ -727,6 +778,7 @@ static struct poll_operation_id *_create_id(struct cmd_context *cmd,
 	id->uuid = uuid ? dm_pool_strdup(cmd->mem, uuid) : NULL;
 
 	if (!id->vg_name || !id->lv_name || !id->display_name || !id->uuid) {
+		log_error("Failed to copy one or more poll_operation_id members.");
 		_destroy_id(cmd, id);
 		id = NULL;
 	}
@@ -763,6 +815,7 @@ int pvmove(struct cmd_context *cmd, int argc, char **argv)
 {
 	char *colon;
 	int ret;
+	unsigned in_progress = 1;
 	union lvid *lvid = NULL;
 	char *pv_name = NULL, *vg_name = NULL, *lv_name = NULL;
 
@@ -790,12 +843,13 @@ int pvmove(struct cmd_context *cmd, int argc, char **argv)
 		if (colon)
 			*colon = '\0';
 
-		if (!arg_count(cmd, abort_ARG) &&
-		    (ret = _set_up_pvmove(cmd, pv_name, argc, argv, lvid, &vg_name, &lv_name)) !=
-		    ECMD_PROCESSED) {
-			stack;
+		if (!arg_count(cmd, abort_ARG))
+		    ret = _set_up_pvmove(cmd, pv_name, argc, argv, lvid, &vg_name, &lv_name);
+		else
+		    ret = _get_id_components(cmd, pv_name, lvid, &vg_name, &lv_name, &in_progress) ? ECMD_PROCESSED : ECMD_FAILED;
+
+		if (ret != ECMD_PROCESSED || !in_progress)
 			return ret;
-		}
 	}
 
 	return pvmove_poll(cmd, pv_name, lvid ? lvid->s : NULL, vg_name, lv_name,
