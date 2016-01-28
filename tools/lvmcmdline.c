@@ -1472,6 +1472,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct dm_config_tree *config_string_cft;
 	struct dm_config_tree *config_profile_command_cft, *config_profile_metadata_cft;
+	const char *reason = NULL;
 	int ret = 0;
 	int locking_type;
 	int monitoring;
@@ -1637,6 +1638,11 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	if (!_cmd_no_meta_proc(cmd) && !_init_lvmlockd(cmd)) {
 		ret = ECMD_FAILED;
 		goto_out;
+	}
+
+	if (lvmetad_is_connected() && lvmetad_is_disabled(cmd, &reason)) {
+		log_warn("WARNING: Disabling use of lvmetad because %s.", reason);
+		lvmetad_set_active(cmd, 0);
 	}
 
 	/*
