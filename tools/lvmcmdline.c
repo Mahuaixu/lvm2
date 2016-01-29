@@ -1640,7 +1640,14 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto_out;
 	}
 
-	if (lvmetad_is_connected() && lvmetad_is_disabled(cmd, &reason)) {
+	/*
+	 * If lvmetad is disabled, don't use it and revert to scanning.
+	 * The exception is pvscan which is explicitly repopulating
+	 * lvmetad, and may be able to clear the disabled setting.
+	 */
+	if (lvmetad_is_connected() &&
+	    !(cmd->command->flags & DISABLE_BUILTIN_PVSCAN) &&
+	    lvmetad_is_disabled(cmd, &reason)) {
 		log_warn("WARNING: Disabling use of lvmetad because %s.", reason);
 		lvmetad_set_active(cmd, 0);
 	}
