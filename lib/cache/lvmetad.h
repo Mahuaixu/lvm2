@@ -179,6 +179,7 @@ int lvmetad_token_matches(struct cmd_context *cmd);
 int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const char *vgid);
 
 int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason);
+void lvmetad_set_disabled(struct cmd_context *cmd, const char *reason);
 
 #  else		/* LVMETAD_SUPPORT */
 
@@ -212,6 +213,7 @@ int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason);
 #    define lvmetad_token_matches(cmd) (1)
 #    define lvmetad_is_connected() (0)
 #    define lvmetad_is_disabled(cmd, reason) (0)
+#    define lvmetad_set_disabled(cmd, reason) do { } while (0)
 
 #  endif	/* LVMETAD_SUPPORT */
 
