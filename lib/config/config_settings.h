@@ -395,6 +395,17 @@ cfg(devices_issue_discards_CFG, "issue_discards", devices_CFG_SECTION, 0, CFG_TY
 	"generally do. If enabled, discards will only be issued if both the\n"
 	"storage and kernel provide support.\n")
 
+cfg(devices_strict_pv_device_CFG, "strict_pv_device", devices_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_STRICT_PV_DEVICE, vsn(2, 2, 142), NULL, 0, NULL,
+	"Disallow VG modification while a PV appears on multiple devices.\n"
+	"When a PV appears on multiple devices, LVM attempts to choose the\n"
+	"best device to use for the PV. If the devices represent the same\n"
+	"underlying storage, the choice has minimal consequence. If the\n"
+	"devices represent different underlying storage, the wrong choice\n"
+	"can result in data loss if the VG is modified. Enabling this\n"
+	"setting is the safest option because it prevents modifying a VG\n"
+	"while a PV appears on multiple devices. Disabling this setting\n"
+	"allows the VG to be used as usual even with uncertain devices.\n")
+
 cfg_array(allocation_cling_tag_list_CFG, "cling_tag_list", allocation_CFG_SECTION, CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 77), NULL, 0, NULL,
 	"Advise LVM which PVs to use when searching for new space.\n"
 	"When searching for free space to extend an LV, the 'cling' allocation\n"

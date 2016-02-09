@@ -124,6 +124,7 @@ struct cmd_context {
 	unsigned report_binary_values_as_numeric:1;
 	unsigned report_mark_hidden_devices:1;
 	unsigned metadata_read_only:1;
+	unsigned permitted_read_only:1;
 	unsigned ignore_clustered_vgs:1;
 	unsigned threaded:1;			/* set if running within a thread e.g. clvmd */
 	unsigned independent_metadata_areas:1;	/* active formats have MDAs outside PVs */

@@ -1606,6 +1606,10 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		lvmetad_set_active(cmd, 0);
 	}
 
+
+	if (cmd->command->flags & PERMITTED_READ_ONLY)
+		cmd->permitted_read_only = 1;
+
 	if (cmd->metadata_read_only &&
 	    !(cmd->command->flags & PERMITTED_READ_ONLY)) {
 		log_error("%s: Command not permitted while global/metadata_read_only "
