@@ -900,8 +900,6 @@ int pvmove(struct cmd_context *cmd, int argc, char **argv)
 				handle,
 				is_abort ? &_pvmove_read_single : &_pvmove_setup_single);
 
-		destroy_processing_handle(cmd, handle);
-
 		if (!is_abort) {
 			if (!pp.found_pv) {
 				stack;
