@@ -112,6 +112,8 @@ struct arg_value_group_list {
 #define MUST_USE_ALL_ARGS        0x00000100
 /* For pvscan itself, disable the automatic/preemptive pvscan. */
 #define DISABLE_BUILTIN_PVSCAN   0x00000200
+/* Command should process unused duplicate devices. */
+#define ENABLE_DUPLICATE_DEVS    0x00000400
  
 /* a register of the lvm commands */
 struct command {
