@@ -198,8 +198,6 @@ int lvmcache_found_duplicate_pvs(void);
 
 int lvmcache_get_unused_duplicate_devs(struct cmd_context *cmd, struct dm_list *head);
 
-void lvmcache_set_preferred_duplicates(const char *vgid);
-
 int vg_has_duplicate_pvs(struct volume_group *vg);
 
 int lvmcache_contains_lock_type_sanlock(struct cmd_context *cmd);
