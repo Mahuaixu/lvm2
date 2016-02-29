@@ -17,6 +17,7 @@
 #include "math.h" /* log10() */
 
 #define DM_STATS_REGION_NOT_PRESENT UINT64_MAX
+#define DM_STATS_GROUP_NOT_PRESENT UINT64_MAX
 
 #define NSEC_PER_USEC   1000L
 #define NSEC_PER_MSEC   1000000L
@@ -64,6 +65,7 @@ struct dm_stats_counters {
 
 struct dm_stats_region {
 	uint64_t region_id; /* as returned by @stats_list */
+	uint64_t group_id; /* _stats_region_group_id() */
 	uint64_t start;
 	uint64_t len;
 	uint64_t step;
@@ -72,6 +74,13 @@ struct dm_stats_region {
 	uint64_t timescale; /* precise_timestamps is per-region */
 	struct dm_histogram *bounds; /* histogram configuration */
 	struct dm_stats_counters *counters;
+};
+
+struct dm_stats_group {
+	uint64_t group_id;
+	const char *alias;
+	int aggregate;
+	dm_bitset_t regions;
 };
 
 struct dm_stats {
@@ -83,12 +92,14 @@ struct dm_stats {
 	char *program_id; /* default program_id for this handle */
 	struct dm_pool *mem; /* memory pool for region and counter tables */
 	struct dm_pool *hist_mem; /* separate pool for histogram tables */
+	struct dm_pool *group_mem; /* separate pool for group tables */
 	uint64_t nr_regions; /* total number of present regions */
 	uint64_t max_region; /* size of the regions table */
 	uint64_t interval_ns;  /* sampling interval in nanoseconds */
 	uint64_t timescale; /* default sample value multiplier */
 	int precise; /* use precise_timestamps when creating regions */
 	struct dm_stats_region *regions;
+	struct dm_stats_group *groups;
 	/* statistics cursor */
 	uint64_t cur_region;
 	uint64_t cur_area;
@@ -152,6 +163,9 @@ struct dm_stats *dm_stats_create(const char *program_id)
 	if (!(dms->hist_mem = dm_pool_create("histogram_pool", hist_hint)))
 		goto_bad;
 
+	if (!(dms->group_mem = dm_pool_create("group_pool", hist_hint)))
+		goto_bad;
+
 	if (!program_id || !strlen(program_id))
 		dms->program_id = _program_id_from_proc();
 	else
@@ -179,11 +193,15 @@ struct dm_stats *dm_stats_create(const char *program_id)
 
 bad:
 	dm_pool_destroy(dms->mem);
+	if (dms->hist_mem)
+		dm_pool_destroy(dms->hist_mem);
+	if (dms->group_mem)
+		dm_pool_destroy(dms->group_mem);
 	dm_free(dms);
 	return NULL;
 }
 
-/**
+/*
  * Test whether the stats region pointed to by region is present.
  */
 static int _stats_region_present(const struct dm_stats_region *region)
@@ -210,7 +228,7 @@ static void _stats_region_destroy(struct dm_stats_region *region)
 	if (!_stats_region_present(region))
 		return;
 
-	/**
+	/*
 	 * Don't free counters here explicitly; it will be dropped
 	 * from the pool along with the corresponding regions table.
 	 *
@@ -240,6 +258,35 @@ static void _stats_regions_destroy(struct dm_stats *dms)
 	dm_pool_free(mem, dms->regions);
 }
 
+static void _stats_group_destroy(struct dm_stats_group *group)
+{
+	if (!_stats_group_present(group))
+		return;
+
+	if (group->alias) {
+		dm_free((char *) group->alias);
+		group->alias = NULL;
+	}
+	if (group->regions) {
+		dm_bitset_destroy(group->regions);
+		group->regions = NULL;
+	}
+	group->group_id = DM_STATS_GROUP_NOT_PRESENT;
+}
+
+static void _stats_groups_destroy(struct dm_stats *dms)
+{
+	uint64_t i;
+
+	if (!dms->groups)
+		return;
+
+	/* walk backwards to obey pool order */
+	for (i = dms->max_region; (i != DM_STATS_REGION_NOT_PRESENT); i--)
+		_stats_group_destroy(&dms->groups[i]);
+	dm_pool_free(dms->group_mem, dms->groups);
+}
+
 static int _set_stats_device(struct dm_stats *dms, struct dm_task *dmt)
 {
 	if (dms->name)
@@ -252,7 +299,7 @@ static int _set_stats_device(struct dm_stats *dms, struct dm_task *dmt)
 	return_0;
 }
 
-static int _stats_bound(struct dm_stats *dms)
+static int _stats_bound(const struct dm_stats *dms)
 {
 	if (dms->major > 0 || dms->name || dms->uuid)
 		return 1;
@@ -276,6 +323,7 @@ int dm_stats_bind_devno(struct dm_stats *dms, int major, int minor)
 {
 	_stats_clear_binding(dms);
 	_stats_regions_destroy(dms);
+	_stats_groups_destroy(dms);
 
 	dms->major = major;
 	dms->minor = minor;
@@ -287,6 +335,7 @@ int dm_stats_bind_name(struct dm_stats *dms, const char *name)
 {
 	_stats_clear_binding(dms);
 	_stats_regions_destroy(dms);
+	_stats_groups_destroy(dms);
 
 	if (!(dms->name = dm_pool_strdup(dms->mem, name)))
 		return_0;
@@ -298,6 +347,7 @@ int dm_stats_bind_uuid(struct dm_stats *dms, const char *uuid)
 {
 	_stats_clear_binding(dms);
 	_stats_regions_destroy(dms);
+	_stats_groups_destroy(dms);
 
 	if (!(dms->uuid = dm_pool_strdup(dms->mem, uuid)))
 		return_0;
@@ -613,6 +663,8 @@ static int _stats_parse_list_region(struct dm_stats *dms,
 	} else
 		region->bounds = NULL;
 
+	region->group_id = DM_STATS_GROUP_NOT_PRESENT;
+
 	if (!(region->program_id = dm_strdup(program_id)))
 		return_0;
 	if (!(region->aux_data = dm_strdup(aux_data))) {
@@ -638,8 +690,8 @@ static int _stats_parse_list(struct dm_stats *dms, const char *resp)
 		return 0;
 	}
 
-	if (dms->regions)
-		_stats_regions_destroy(dms);
+	_stats_regions_destroy(dms);
+	_stats_groups_destroy(dms);
 
 	/* no regions */
 	if (!strlen(resp)) {
@@ -971,6 +1023,7 @@ static void _stats_walk_next(const struct dm_stats *dms, int region,
 
 	if (region || !present || ++(*cur_a) == _nr_areas_region(cur)) {
 		*cur_a = 0;
+		/* FIXME: generates <backtrace> at end of region table. */
 		while(!dm_stats_region_present(dms, ++(*cur_r))
 		      && *cur_r < dms->max_region)
 			; /* keep walking until a present region is found
@@ -1379,9 +1432,11 @@ bad:
 void dm_stats_destroy(struct dm_stats *dms)
 {
 	_stats_regions_destroy(dms);
+	_stats_groups_destroy(dms);
 	_stats_clear_binding(dms);
 	dm_pool_destroy(dms->mem);
 	dm_pool_destroy(dms->hist_mem);
+	dm_pool_destroy(dms->group_mem);
 	dm_free(dms->program_id);
 	dm_free(dms);
 }
