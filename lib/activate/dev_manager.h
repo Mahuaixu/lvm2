@@ -97,4 +97,6 @@ int dev_manager_execute(struct dev_manager *dm);
 int dev_manager_device_uses_vg(struct device *dev,
 			       struct volume_group *vg);
 
+int dev_manager_lvm_using_device(struct device *dev);
+
 #endif

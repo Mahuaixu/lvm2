@@ -2389,6 +2389,15 @@ int pv_uses_vg(struct physical_volume *pv,
 	return dev_manager_device_uses_vg(pv->dev, vg);
 }
 
+/*
+ * Are there any active LVs using this device,
+ * i.e. is it in the dependency list of any LVM devices?
+ */
+int lvs_using_device(struct device *dev)
+{
+	return dev_manager_lvm_using_device(dev);
+}
+
 void activation_release(void)
 {
 	if (critical_section())

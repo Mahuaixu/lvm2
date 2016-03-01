@@ -25,6 +25,7 @@
 #include "format_pool.h"
 #include "format1.h"
 #include "config.h"
+#include "activate.h"
 
 #include "lvmetad.h"
 
@@ -1823,6 +1824,8 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 			int new_is_dm = 0;
 			int old_has_holders = 0;
 			int new_has_holders = 0;
+			int old_has_lvs = 0;
+			int new_has_lvs = 0;
 
 			/*
 			 * Here are different devices with the same pvid:
@@ -1861,12 +1864,15 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 			old_has_holders = dm_device_has_holders(MAJOR(existing->dev->dev), MINOR(existing->dev->dev));
 			new_has_holders = dm_device_has_holders(MAJOR(dev->dev), MINOR(dev->dev));
 
-			if (old_has_holders && new_has_holders) {
+			old_has_lvs = lvs_using_device(existing->dev);
+			new_has_lvs = lvs_using_device(dev);
+
+			if (old_has_lvs && new_has_lvs) {
 				/*
 				 * This is not a selection of old or new, but
 				 * just a warning to be aware of.
 				 */
-				log_warn("WARNING: duplicate PV %s is being used from both devices %s and %s",
+				log_warn("WARNING: duplicate PV %s is being used by LVs on devices %s and %s",
 					 pvid_s,
 					 dev_name(existing->dev),
 					 dev_name(dev));
@@ -1884,7 +1890,28 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 				return NULL;
 			}
 
-			if (old_in_subsystem && !new_in_subsystem) {
+			if (old_has_lvs && !new_has_lvs) {
+				/* Use old, ignore new. */
+				log_warn("Found duplicate PV %s: using %s not %s",
+					 pvid_s,
+					 dev_name(existing->dev),
+					 dev_name(dev));
+				log_warn("Using duplicate PV %s used by LVs, ignoring %s",
+					 dev_name(existing->dev),
+					 dev_name(dev));
+				return NULL;
+
+			} else if (!old_has_lvs && new_has_lvs) {
+				/* Use new, replace old. */
+				log_warn("Found duplicate PV %s: using %s not %s",
+					 pvid_s,
+					 dev_name(dev),
+					 dev_name(existing->dev));
+				log_warn("Using duplicate PV %s used by LVs, replacing %s",
+					 dev_name(dev),
+					 dev_name(existing->dev));
+
+			} else if (old_in_subsystem && !new_in_subsystem) {
 				/* Use old, ignore new. */
 				log_warn("Found duplicate PV %s: using %s not %s",
 					 pvid_s,

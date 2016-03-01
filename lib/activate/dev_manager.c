@@ -3160,3 +3160,95 @@ out:
 	dm_tree_free(dtree);
 	return r;
 }
+
+static int _is_lvm_uuid(char *dm_name)
+{
+	struct dm_info info;
+	struct dm_task *dmt;
+	const char *uuid;
+	int ret = 0;
+
+	if (!(dmt = dm_task_create(DM_DEVICE_INFO)))
+		return 0;
+
+	if (!dm_task_set_name(dmt, dm_name))
+		goto out;
+
+	if (!dm_task_run(dmt))
+		goto out;
+
+	if (!dm_task_get_info(dmt, &info))
+		goto out;
+
+	if (!info.exists)
+		goto out;
+
+	if (!(uuid = dm_task_get_uuid(dmt)))
+		goto out;
+
+	if (!strncmp(uuid, UUID_PREFIX, sizeof(UUID_PREFIX) - 1))
+		ret = 1;
+
+	/* Verify that a uuid follows the LVM prefix? */
+out:
+	dm_task_destroy(dmt);
+	return ret;
+}
+
+int dev_manager_lvm_using_device(struct device *dev)
+{
+	struct dm_task *dmt;
+	struct dm_task *dmt2;
+	struct dm_deps *deps;
+	struct dm_names *names;
+	unsigned next = 0;
+	int is_used = 0;
+	int i;
+
+	if (!(dmt = _setup_task(NULL, NULL, 0, DM_DEVICE_LIST, 0, 0, 0)))
+		return_0;
+
+	if (!dm_task_run(dmt))
+		goto_out;
+
+	if (!(names = dm_task_get_names(dmt)))
+		goto_out;
+
+	if (!names->dev)
+		goto_out;
+
+	do {
+		names = (struct dm_names *)((char *) names + next);
+		dmt2 = NULL;
+
+		if (!_is_lvm_uuid(names->name))
+			goto next;
+
+		if (!(dmt2 = _setup_task(names->name, NULL, 0, DM_DEVICE_DEPS, 0, 0, 0)))
+			goto next;
+
+		if (!dm_task_run(dmt2))
+			goto next;
+
+		if (!(deps = dm_task_get_deps(dmt2)))
+			goto next;
+
+		for (i = 0; i < deps->count; i++) {
+			if ((MAJOR(dev->dev) == (int) MAJOR(deps->device[i])) &&
+			    (MINOR(dev->dev) == (int) MINOR(deps->device[i]))) {
+				is_used = 1;
+				break;
+			}
+		}
+next:
+		if (dmt2)
+			dm_task_destroy(dmt2);
+		next = names->next;
+
+	} while (next && !is_used);
+
+out:
+	dm_task_destroy(dmt);
+	return is_used;
+}
+

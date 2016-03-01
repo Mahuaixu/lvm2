@@ -220,6 +220,11 @@ int add_linear_area_to_dtree(struct dm_tree_node *node, uint64_t size,
 int pv_uses_vg(struct physical_volume *pv,
 	       struct volume_group *vg);
 
+/*
+ * Returns 1 if device is in the dm dependency tree of any active LVs.
+ */
+int lvs_using_device(struct device *dev);
+
 struct dev_usable_check_params {
 	unsigned int check_empty:1;
 	unsigned int check_blocked:1;
