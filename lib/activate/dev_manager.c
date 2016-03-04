@@ -3188,14 +3188,12 @@ static int _is_lvm_uuid(char *dm_name)
 
 	if (!strncmp(uuid, UUID_PREFIX, sizeof(UUID_PREFIX) - 1))
 		ret = 1;
-
-	/* Verify that a uuid follows the LVM prefix? */
 out:
 	dm_task_destroy(dmt);
 	return ret;
 }
 
-int dev_manager_lvm_using_device(struct device *dev)
+int dev_manager_lvm_using_device(uint32_t major, uint32_t minor)
 {
 	struct dm_task *dmt;
 	struct dm_task *dmt2;
@@ -3234,8 +3232,8 @@ int dev_manager_lvm_using_device(struct device *dev)
 			goto next;
 
 		for (i = 0; i < deps->count; i++) {
-			if ((MAJOR(dev->dev) == (int) MAJOR(deps->device[i])) &&
-			    (MINOR(dev->dev) == (int) MINOR(deps->device[i]))) {
+			if ((major == (int) MAJOR(deps->device[i])) &&
+			    (minor == (int) MINOR(deps->device[i]))) {
 				is_used = 1;
 				break;
 			}

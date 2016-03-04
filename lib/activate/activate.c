@@ -2395,7 +2395,7 @@ int pv_uses_vg(struct physical_volume *pv,
  */
 int lvs_using_device(struct device *dev)
 {
-	return dev_manager_lvm_using_device(dev);
+	return dev_manager_lvm_using_device(MAJOR(dev->dev), MINOR(dev->dev));
 }
 
 void activation_release(void)

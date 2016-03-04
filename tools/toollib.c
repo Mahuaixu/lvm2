@@ -2879,6 +2879,40 @@ out:
 	return r;
 }
 
+static int _get_active_devices(struct cmd_context *cmd, struct dm_list *active_devices)
+{
+	struct dev_iter *iter;
+	struct device *dev;
+	struct device_id_list *dil;
+	int r = ECMD_FAILED;
+
+	log_debug("Getting list of active devices");
+
+	if (!(iter = dev_iter_create(NULL, 0))) {
+		log_error("dev_iter creation failed.");
+		return ECMD_FAILED;
+	}
+
+	while ((dev = dev_iter_get(iter))) {
+		if (!(dil = dm_pool_alloc(cmd->mem, sizeof(*dil)))) {
+			log_error("device_id_list alloc failed.");
+			goto out;
+		}
+
+		if (!dev->lvm_using)
+			continue;
+
+		strncpy(dil->pvid, dev->pvid, ID_LEN);
+		dil->dev = dev;
+		dm_list_add(active_devices, &dil->list);
+	}
+
+	r = ECMD_PROCESSED;
+out:
+	dev_iter_destroy(iter);
+	return r;
+}
+
 static int _device_list_remove(struct dm_list *devices, struct device *dev)
 {
 	struct device_id_list *dil;
@@ -3296,6 +3330,7 @@ int process_each_pv(struct cmd_context *cmd,
 	struct dm_list arg_missed;	/* device_id_list */
 	struct dm_list all_vgnameids;	/* vgnameid_list */
 	struct dm_list all_devices;	/* device_id_list */
+	struct dm_list act_devices;	/* device_id_list */
 	struct device_id_list *dil;
 	int process_all_pvs;
 	int process_all_devices;
@@ -3327,6 +3362,7 @@ int process_each_pv(struct cmd_context *cmd,
 	dm_list_init(&arg_missed);
 	dm_list_init(&all_vgnameids);
 	dm_list_init(&all_devices);
+	dm_list_init(&act_devices);
 
 	/*
 	 * Create two lists from argv:
@@ -3383,6 +3419,26 @@ int process_each_pv(struct cmd_context *cmd,
 	if ((ret = _get_all_devices(cmd, &all_devices) != ECMD_PROCESSED)) {
 		stack;
 		return ret;
+	}
+
+	/*
+	 * Print a warning if this command is meant to process all PVs, but is
+	 * not processing a device that LVM is currently using for an active
+	 * LV, probably because a filter is excluding it.  This is done by
+	 * creating a list of devices that are currently in use by LVM, and
+	 * then warning if one of them is not in the list of all devices that
+	 * are being processed.
+	 */
+	if (process_all_pvs) {
+		if ((ret = _get_active_devices(cmd, &act_devices) != ECMD_PROCESSED)) {
+			stack;
+			return ret;
+		}
+
+		dm_list_iterate_items(dil, &act_devices) {
+			if (!_device_list_find_dev(&all_devices, dil->dev))
+				log_warn("WARNING: Not processing PV for device %s which lvm is using.", dev_name(dil->dev));
+		}
 	}
 
 	if ((ret = _get_arg_devices(cmd, &arg_pvnames, &arg_devices)) != ECMD_PROCESSED)

@@ -61,6 +61,7 @@ struct device {
 	int phys_block_size;
 	int block_size;
 	int read_ahead;
+	int lvm_using;
 	uint32_t flags;
 	unsigned size_seqno;
 	uint64_t size;

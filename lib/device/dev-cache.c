@@ -17,6 +17,7 @@
 #include "btree.h"
 #include "config.h"
 #include "toolcontext.h"
+#include "activate.h"
 
 #ifdef UDEV_SYNC_SUPPORT
 #include <libudev.h>
@@ -408,6 +409,8 @@ static int _insert_dev(const char *path, dev_t d)
 		log_error("Couldn't add name to hash in dev cache.");
 		return 0;
 	}
+
+	dev->lvm_using = lvs_using_device(dev);
 
 	return 1;
 }
@@ -1110,3 +1113,4 @@ const char *dev_name(const struct device *dev)
 	return (dev && dev->aliases.n) ? dm_list_item(dev->aliases.n, struct dm_str_list)->str :
 	    unknown_device_name();
 }
+
