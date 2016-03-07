@@ -209,6 +209,14 @@ static int _stats_region_present(const struct dm_stats_region *region)
 	return !(region->region_id == DM_STATS_REGION_NOT_PRESENT);
 }
 
+/*
+ * Test whether the stats group pointed to by group is present.
+ */
+static int _stats_group_present(const struct dm_stats_group *group)
+{
+	return !(group->group_id == DM_STATS_GROUP_NOT_PRESENT);
+}
+
 static void _stats_histograms_destroy(struct dm_pool *mem,
 				      struct dm_stats_region *region)
 {
@@ -496,6 +504,135 @@ bad:
 }
 
 /*
+ * update region group_id values
+ */
+static void _stats_update_groups(struct dm_stats *dms)
+{
+	struct dm_stats_group *group;
+	uint64_t group_id, i;
+
+	for (group_id = 0; group_id < dms->max_region + 1; group_id++) {
+		if (!_stats_group_present(&dms->groups[group_id]))
+			continue;
+
+		group = &dms->groups[group_id];
+
+		for (i = dm_bit_get_first(group->regions);
+		     i != DM_STATS_GROUP_NOT_PRESENT;
+		     i = dm_bit_get_next(group->regions, i))
+			dms->regions[i].group_id = group_id;
+	}
+}
+
+/*
+ * Parse a DMS_GROUP group descriptor embedded in a region's aux_data.
+ *
+ * DMS_GROUP="VERSION:..."
+ * DMS_GROUP="ALIAS:AGGREGATE:MEMBERS"
+ *
+ * ALIAS: group alias
+ * AGGREGATE: 0/1 indicating whether values are aggregated
+ * MEMBERS: list of group member region ids.
+ *
+ */
+#define DMS_GROUP_TAG "DMS_GROUP="
+#define DMS_GROUP_TAG_LEN 10
+#define DMS_GROUP_SEP ":"
+static void _parse_aux_data_groups(struct dm_stats *dms,
+				   struct dm_stats_region *region,
+				   struct dm_stats_group *group)
+{
+	char *alias, *aggr_str, *c, *end;
+	dm_bitset_t regions;
+	int aggr, r;
+
+	c = strstr(region->aux_data, DMS_GROUP_TAG);
+
+	if (!c)
+		goto bad;
+
+	alias = c + strlen(DMS_GROUP_TAG);
+
+	c = strstr(c, DMS_GROUP_SEP);
+
+	if (!c) {
+		log_error("Expected '%s' after DMS_GROUP= while "
+			  "reading aux_data", DMS_GROUP_SEP);
+		goto bad;
+	}
+
+	/* terminate alias and advance to aggr_str */
+	*(c++) = '\0';
+
+	log_debug("Read alias '%s' from aux_data", alias);
+
+	aggr_str = c;
+
+	r = sscanf(aggr_str, "%d:", &aggr);
+
+	if (r != 1) {
+		log_error("Could not parse group options while "
+			  "reading aux_data");
+		goto bad;
+	}
+
+	c = strstr(c, DMS_GROUP_SEP) + 1;
+	if (!c) {
+		log_error("Could not find member list while "
+			  "reading aux_data");
+		goto bad;
+	}
+
+	/* if user aux_data follows make sure we have a terminated
+	 * string to pass to dm_bitset_parse_list().
+	 */
+	end = strchr(c, ' ');
+	if (!end)
+		end = c + strlen(c);
+	*end = '\0';
+
+	if (!(regions = dm_bitset_parse_list(c, NULL))) {
+		log_error("Could not parse member list while "
+			  "reading aux_data");
+		dm_bitset_destroy(regions);
+		goto bad;
+	}
+
+	group->group_id = dm_bit_get_first(regions);
+	group->regions = regions;
+	group->aggregate = aggr;
+
+	if (strlen(alias))
+		group->alias = dm_strdup(alias);
+	else
+		group->alias = NULL;
+
+	/* separate group tag from user aux_data */
+	if (strlen(end))
+		c = dm_strdup(end);
+	else
+		/* must be at least one char following region id for
+		 * @stats_set_aux message. */
+		c = dm_strdup(" ");
+
+	dm_free(region->aux_data);
+	region->aux_data = c;
+
+	log_debug("trimming aux_data to: %s", region->aux_data);
+
+	log_debug("Found group: %s aggr=%d, group_id=" FMTu64,
+		  (group->alias) ? group->alias : "",
+		  aggr, group->group_id);
+	return;
+
+bad:
+	memset(group, 0, sizeof(*group));
+	group->group_id = DM_STATS_GROUP_NOT_PRESENT;
+	return;
+}
+
+
+/*
  * Parse a histogram specification returned by the kernel in a
  * @stats_list response.
  */
@@ -608,8 +745,8 @@ static int _stats_parse_list_region(struct dm_stats *dms,
 				    struct dm_stats_region *region, char *line)
 {
 	char *p = NULL, string_data[4096]; /* FIXME: add dm_sscanf with %ms? */
-	const char *program_id, *aux_data, *stats_args;
-	const char *empty_string = "";
+	char *program_id, *aux_data, *stats_args;
+	char *empty_string = (char *) "";
 	int r;
 
 	memset(string_data, 0, sizeof(string_data));
@@ -638,17 +775,22 @@ static int _stats_parse_list_region(struct dm_stats *dms,
 	if ((p = strchr(string_data, ' '))) {
 		/* terminate program_id string. */
 		*p = '\0';
-		if (!strcmp(program_id, "-"))
+		if (!strncmp(program_id, "-", 1))
 			program_id = empty_string;
 		aux_data = p + 1;
 		if ((p = strchr(aux_data, ' '))) {
 			/* terminate aux_data string. */
 			*p = '\0';
-			if (!strcmp(aux_data, "-"))
-				aux_data = empty_string;
 			stats_args = p + 1;
 		} else
 			stats_args = empty_string;
+
+		/* no aux_data? */
+		if (!strncmp(aux_data, "-", 1))
+			aux_data = empty_string;
+		else
+			/* remove trailing newline */
+			aux_data[strlen(aux_data) - 1] = '\0';
 	} else
 		aux_data = stats_args = empty_string;
 
@@ -680,7 +822,8 @@ static int _stats_parse_list(struct dm_stats *dms, const char *resp)
 {
 	uint64_t max_region = 0, nr_regions = 0;
 	struct dm_stats_region cur, fill;
-	struct dm_pool *mem = dms->mem;
+	struct dm_stats_group cur_group;
+	struct dm_pool *mem = dms->mem, *group_mem = dms->group_mem;
 	FILE *list_rows;
 	/* FIXME: use correct maximum line length for kernel format */
 	char line[256];
@@ -707,10 +850,20 @@ static int _stats_parse_list(struct dm_stats *dms, const char *resp)
 	if (!(list_rows = fmemopen((char *)resp, strlen(resp), "r")))
 		return_0;
 
+	/* begin region table */
 	if (!dm_pool_begin_object(mem, 1024))
 		goto_bad;
 
+	/* begin group table */
+	if (!dm_pool_begin_object(group_mem, 32))
+		goto_bad;
+
 	while(fgets(line, sizeof(line), list_rows)) {
+
+		cur_group.group_id = DM_STATS_GROUP_NOT_PRESENT;
+		cur_group.aggregate = 0;
+		cur_group.regions = NULL;
+		cur_group.alias = NULL;
 
 		if (!_stats_parse_list_region(dms, &cur, line))
 			goto_bad;
@@ -718,14 +871,26 @@ static int _stats_parse_list(struct dm_stats *dms, const char *resp)
 		/* handle holes in the list of region_ids */
 		if (cur.region_id > max_region) {
 			memset(&fill, 0, sizeof(fill));
+			memset(&cur_group, 0, sizeof(cur_group));
 			fill.region_id = DM_STATS_REGION_NOT_PRESENT;
+			cur_group.group_id = DM_STATS_GROUP_NOT_PRESENT;
 			do {
 				if (!dm_pool_grow_object(mem, &fill, sizeof(fill)))
+					goto_bad;
+				if (!dm_pool_grow_object(group_mem, &cur_group,
+							 sizeof(cur_group)))
 					goto_bad;
 			} while (max_region++ < (cur.region_id - 1));
 		}
 
+		if (cur.aux_data)
+			_parse_aux_data_groups(dms, &cur, &cur_group);
+
 		if (!dm_pool_grow_object(mem, &cur, sizeof(cur)))
+			goto_bad;
+
+		if (!dm_pool_grow_object(group_mem, &cur_group,
+					 sizeof(cur_group)))
 			goto_bad;
 
 		max_region++;
@@ -735,6 +900,9 @@ static int _stats_parse_list(struct dm_stats *dms, const char *resp)
 	dms->nr_regions = nr_regions;
 	dms->max_region = max_region - 1;
 	dms->regions = dm_pool_end_object(mem);
+	dms->groups = dm_pool_end_object(group_mem);
+
+	_stats_update_groups(dms);
 
 	if (fclose(list_rows))
 		stack;
@@ -745,6 +913,7 @@ bad:
 	if (fclose(list_rows))
 		stack;
 	dm_pool_abandon_object(mem);
+	dm_pool_abandon_object(group_mem);
 
 	return 0;
 }
