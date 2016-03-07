@@ -1074,6 +1074,27 @@ const char *dm_stats_get_current_region_program_id(const struct dm_stats *dms);
 const char *dm_stats_get_current_region_aux_data(const struct dm_stats *dms);
 
 /*
+ * Statistics groups and data aggregation.
+ */
+
+/*
+ * Create a new group in stats handle dms from the group descriptor
+ * passed in group. The group descriptor is a string containing a list
+ * of region_id values that will be included in the group. The first
+ * region_id found will be the group leader. Ranges of identifiers may
+ * be expressed as "M-N", where M and N are the start and end region_id
+ * values for the range.
+ */
+int dm_stats_create_group(struct dm_stats *dms, const char *group,
+			  const char *alias, int aggregate,
+			  uint64_t *group_id);
+
+/*
+ * Remove the specified group_id.
+ */
+int dm_stats_delete_group(struct dm_stats *dms, uint64_t group_id);
+
+/*
  * Call this to actually run the ioctl.
  */
 int dm_task_run(struct dm_task *dmt);

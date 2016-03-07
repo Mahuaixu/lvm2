@@ -1502,6 +1502,104 @@ out:
 	return resp;
 }
 
+static char *_stats_group_aux_data(struct dm_stats *dms, uint64_t group_id)
+{
+	int i, r, last, aggregate, nr_regions = 0;
+	char *aux_string, *buf;
+	dm_bitset_t regions;
+	size_t buflen = 0;
+	const char *alias;
+
+	aggregate = dms->groups[group_id].aggregate;
+	regions = dms->groups[group_id].regions;
+	alias = dms->groups[group_id].alias;
+
+	/* check region ids and find last set bit */
+	i = dm_bit_get_first(regions);
+	for(; i >= 0; i = dm_bit_get_next(regions, i)) {
+		if (!dm_stats_region_present(dms, i)) {
+			log_error("Region identifier %d not found", i);
+			goto bad;
+		}
+		log_debug("Adding region id %d to group " FMTu64
+			  " aux_data", i, group_id);
+		buflen += (i < 10) ? 1 : (size_t) lround(log10(i));
+		nr_regions++;
+		last = i;
+	}
+	log_debug("aux_data buflen (mask): %d", (int)buflen);
+	buflen += DMS_GROUP_TAG_LEN;
+	buflen += alias ? strlen(alias) : 0;
+	buflen += 1 + 2 * strlen(DMS_GROUP_SEP); /* aggregate */
+	buflen += nr_regions; /* commas and NULL */
+	log_debug("aux_data buflen: %d", (int)buflen);
+
+	buf = aux_string = dm_malloc(buflen);
+
+	if (!(dm_strncpy(buf, DMS_GROUP_TAG, DMS_GROUP_TAG_LEN + 1)))
+		goto_bad;
+
+	buf += DMS_GROUP_TAG_LEN;
+	buflen -= DMS_GROUP_TAG_LEN;
+
+	r = dm_snprintf(buf, buflen, "%s%s%d%s", alias ? alias : "",
+			DMS_GROUP_SEP, aggregate, DMS_GROUP_SEP);
+
+	if (r < 0)
+		goto_bad;
+
+	buf += r;
+	buflen -= r;
+
+	/* FIXME: collapse contiguous sequences of IDs into range notation */
+	i = dm_bit_get_first(regions);
+	for(; i >= 0; i = dm_bit_get_next(regions, i)) {
+		r = dm_snprintf(buf, buflen, FMTu64 "%s", (uint64_t) i,
+				(i == last) ? "" : ",");
+		if (r < 0)
+			goto_bad;
+		buf += r;
+		buflen -= r;
+	}
+
+	return aux_string;
+bad:
+	log_error("Could not format group aux_data.");
+	dm_free(aux_string);
+	return NULL;
+}
+
+
+static int _stats_set_aux(struct dm_stats *dms,
+			  uint64_t region_id, const char *aux_data)
+{
+	/* @stats_set_aux <region_id> <aux_data> */
+	const char *err_fmt = "Could not prepare @stats_set_aux %s.";
+	char msg[1024], *group = NULL;
+	struct dm_task *dmt = NULL;
+
+	/* group data required? */
+	if (_stats_group_present(&dms->groups[region_id]))
+		group = _stats_group_aux_data(dms, region_id);
+
+	if (!dm_snprintf(msg, sizeof(msg), "@stats_set_aux " FMTu64 " %s%s%s ",
+			 region_id, (group) ? group : "",
+			 (aux_data && strlen(aux_data)) ? " " : "", aux_data)) {
+		log_error(err_fmt, "message");
+		goto bad;
+	}
+
+	if (!(dmt = _stats_send_message(dms, msg)))
+		goto_bad;
+
+	/* no response to a @stats_set_aux message */
+	dm_task_destroy(dmt);
+
+	return 1;
+bad:
+	return 0;
+}
+
 void dm_stats_buffer_destroy(struct dm_stats *dms, char *buffer)
 {
 	dm_pool_free(dms->mem, buffer);
@@ -2742,3 +2840,94 @@ int dm_stats_create_region_v1_02_104(struct dm_stats *dms, uint64_t *region_id,
 }
 DM_EXPORT_SYMBOL(dm_stats_create_region, 1_02_104);
 #endif
+
+static int _stats_create_group(struct dm_stats *dms, dm_bitset_t regions,
+			       const char *alias, int aggregate,
+			       uint64_t *group_id)
+{
+	struct dm_stats_group *group;
+	*group_id = dm_bit_get_first(regions);
+
+	/* group has no regions? */
+	if (*group_id == DM_STATS_GROUP_NOT_PRESENT)
+		return_0;
+
+	group = &dms->groups[*group_id];
+
+	group->group_id = *group_id;
+	group->regions = regions;
+	group->aggregate = aggregate;
+
+	if (alias)
+		group->alias = dm_strdup(alias);
+	else
+		group->alias = NULL;
+
+	/* force an update of the group tag stored in aux_data */
+	if (!_stats_set_aux(dms, *group_id, dms->regions[*group_id].aux_data))
+		return 0;
+
+	return 1;
+}
+
+/*
+ * Create a new group in stats handle dms from the group description
+ * passed in group.
+ */
+int dm_stats_create_group(struct dm_stats *dms, const char *members,
+			  const char *alias, int aggregate,
+			  uint64_t *group_id)
+{
+	dm_bitset_t regions;
+
+	if (!(regions = dm_bitset_create(NULL, dms->max_region + 1)))
+		return_0;
+
+	if (!(regions = dm_bitset_parse_list(members, NULL))) {
+		log_error("Could not parse list: '%s'", members);
+		goto bad;
+	}
+
+	if (!_stats_create_group(dms, regions, alias, aggregate, group_id))
+		goto bad;
+
+	return 1;
+bad:
+	dm_bitset_destroy(regions);
+	return 0;
+}
+
+/*
+ * Remove the specified group_id.
+ */
+int dm_stats_delete_group(struct dm_stats *dms, uint64_t group_id)
+{
+	struct dm_stats_group *group = &dms->groups[group_id];
+	uint64_t i;
+
+	if (group_id > dms->max_region)
+		return_0;
+
+	if (!_stats_group_present(group))
+		return_0;
+
+	for (i = dm_bit_get_first(group->regions);
+	     i != DM_STATS_GROUP_NOT_PRESENT;
+	     i = dm_bit_get_next(group->regions, i))
+		dms->regions[i].group_id = DM_STATS_GROUP_NOT_PRESENT;
+
+	dm_bitset_destroy(group->regions);
+
+	if (group->alias) {
+		dm_free((char *) group->alias);
+		group->alias = NULL;
+	}
+
+	group->aggregate = 0;
+
+	group->group_id = DM_STATS_GROUP_NOT_PRESENT;
+
+	if (!_stats_set_aux(dms, group_id, dms->regions[group_id].aux_data))
+		return 0;
+	return 1;
+}
