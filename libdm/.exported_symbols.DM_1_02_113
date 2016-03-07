@@ -6,3 +6,4 @@ dm_stats_get_counter
 dm_stats_get_group_id
 dm_stats_get_metric
 dm_stats_get_percent_metric
+dm_stats_set_region_aux_data

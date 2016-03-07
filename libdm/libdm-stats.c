@@ -2353,6 +2353,36 @@ const char *dm_stats_get_region_aux_data(const struct dm_stats *dms,
 	return (aux_data) ? aux_data : "" ;
 }
 
+int dm_stats_set_region_aux_data(struct dm_stats *dms,
+				 uint64_t region_id, char *aux_data)
+{
+	struct dm_stats_region *region;
+
+	if (!aux_data || !strlen(aux_data)) {
+		log_error("Cannot set empty aux_data.");
+		return 0;
+	}
+
+	if (!_stats_region_present(&dms->regions[region_id])) {
+		log_error("Cannot set aux_data: region " FMTu64
+			  " not found.", region_id);
+		return 0;
+	}
+
+	region = &dms->regions[region_id];
+
+	if (!_stats_set_aux(dms, region_id, aux_data))
+		return_0;
+
+	if (region->aux_data)
+		dm_free(aux_data);
+
+	if (!(region->aux_data = dm_strdup(aux_data)))
+		return 0;
+
+	return 1;
+}
+
 const char *dm_stats_get_current_region_program_id(const struct dm_stats *dms)
 {
 	return dm_stats_get_region_program_id(dms, dms->cur_region);

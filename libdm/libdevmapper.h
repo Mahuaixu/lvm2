@@ -911,6 +911,9 @@ const char *dm_stats_get_region_program_id(const struct dm_stats *dms,
 const char *dm_stats_get_region_aux_data(const struct dm_stats *dms,
 					 uint64_t region_id);
 
+int dm_stats_set_region_aux_data(struct dm_stats *dms,
+				 uint64_t region_id, char *aux_data);
+
 /*
  * Statistics cursor
  *
