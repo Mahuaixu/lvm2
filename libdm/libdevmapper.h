@@ -1095,6 +1095,13 @@ int dm_stats_create_group(struct dm_stats *dms, const char *group,
 int dm_stats_delete_group(struct dm_stats *dms, uint64_t group_id);
 
 /*
+ * Return the group_id that the specified region_id belongs to, or the
+ * special value DM_STATS_GROUP_NONE if the region does not belong
+ * to any group.
+ */
+uint64_t dm_stats_get_group_id(const struct dm_stats *dms, uint64_t region_id);
+
+/*
  * Call this to actually run the ioctl.
  */
 int dm_task_run(struct dm_task *dmt);

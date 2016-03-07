@@ -2931,3 +2931,8 @@ int dm_stats_delete_group(struct dm_stats *dms, uint64_t group_id)
 		return 0;
 	return 1;
 }
+
+uint64_t dm_stats_get_group_id(const struct dm_stats *dms, uint64_t region_id)
+{
+	return dms->regions[region_id].group_id;
+}
