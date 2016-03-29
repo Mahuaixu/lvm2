@@ -813,6 +813,7 @@ static void _choose_preferred_devs(struct cmd_context *cmd,
 	int has_holders1, has_holders2;
 	int is_dm1, is_dm2;
 	int has_fs1, has_fs2;
+	int has_lv1, has_lv2;
 	int change;
 
 	/*
@@ -868,6 +869,9 @@ next:
 		dev2_major = MAJOR(dev2->dev);
 		dev2_minor = MINOR(dev2->dev);
 
+		has_lv1 = (dev1->flags & DEV_USED_FOR_LV) ? 1 : 0;
+		has_lv2 = (dev2->flags & DEV_USED_FOR_LV) ? 1 : 0;
+
 		in_subsys1 = dev_subsystem_part_major(dt, dev1);
 		in_subsys2 = dev_subsystem_part_major(dt, dev2);
 
@@ -883,14 +887,19 @@ next:
 		log_debug_cache("PV %s compare duplicates %s and %s",
 				devl->dev->pvid, dev_name(dev1), dev_name(dev2));
 
-		log_debug_cache("dup dev1 %s subsys %d holders %d dm %d mounted %d",
-				dev_name(dev1), in_subsys1, has_holders1, is_dm1, has_fs1);
-		log_debug_cache("dup dev2 %s subsys %d holders %d dm %d mounted %d",
-				dev_name(dev2), in_subsys2, has_holders2, is_dm2, has_fs2);
+		log_debug_cache("dup dev1 %s subsys %d holders %d dm %d fs %d lv %d",
+				dev_name(dev1), in_subsys1, has_holders1, is_dm1, has_fs1, has_lv1);
+		log_debug_cache("dup dev2 %s subsys %d holders %d dm %d fs %d lv %d",
+				dev_name(dev2), in_subsys2, has_holders2, is_dm2, has_fs2, has_lv2);
 
 		change = 0;
 
-		if (has_fs1 && !has_fs2) {
+		if (has_lv1 && !has_lv2) {
+			/* keep 1 */
+		} else if (has_lv2 && !has_lv1) {
+			/* change to 2 */
+			change = 1;
+		} else if (has_fs1 && !has_fs2) {
 			/* keep 1 */
 		} else if (has_fs2 && !has_fs1) {
 			/* change to 2 */
@@ -921,7 +930,7 @@ next:
 	id_write_format((const struct id *)info->dev->pvid, uuid, sizeof(uuid));
 
 	if (dev1 != info->dev) {
-		log_warn("PV %s is using preferred device %s, changed from %s",
+		log_warn("PV %s prefers device %s instead of device %s.",
 			 uuid, dev_name(dev1), dev_name(info->dev));
 		/*
 		 * Move the preferred device from altdevs to add_cache_devs.
@@ -936,8 +945,7 @@ next:
 			dm_list_add(del_cache_devs, &del->list);
 		}
 	} else {
-		log_warn("PV %s is using preferred device %s",
-			 uuid, dev_name(info->dev));
+		log_warn("PV %s prefers device %s.", uuid, dev_name(info->dev));
 	}
 
 	/*
